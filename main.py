@@ -2,8 +2,28 @@ import socket
 import threading
 import json
 import time
+import os
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# O Relay aceita conexões do Cliente e do Servidor (Painel)
+# O Render injeta a porta HTTP na variável PORT (geralmente 10000)
+PORT_HTTP = int(os.environ.get("PORT", 10000))
+
+# Servidor HTTP simples para passar no Health Check do Render
+class DummyHTTPHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+    def log_message(self, format, *args):
+        return # Silencia os logs do HTTP no terminal
+
+def iniciar_servidor_http():
+    server = HTTPServer(('0.0.0.0', PORT_HTTP), DummyHTTPHandler)
+    server.serve_forever()
+
+# --- CÓDIGO DO SEU RELAY (TCP) ---
 HOST = '0.0.0.0'
 PORT_CONTROL = 5000
 PORT_VIDEO = 5005
@@ -11,11 +31,9 @@ PORT_AUDIO = 5007
 
 clientes_conectados = {}
 painel_conectado = None
-
 lock = threading.Lock()
 
 def gerenciar_ponte_dados(socket_origem, socket_destino):
-    """Encaminha pacotes brutos entre cliente e painel sem alteração"""
     try:
         while True:
             dados = socket_origem.recv(65536)
@@ -65,13 +83,12 @@ def escutar_controle():
                 with lock:
                     painel_conectado = conn
                 print("[RELAY] Painel de Controle conectado!")
-                # Envia lista de clientes ativos ao painel
                 lista = [{"id": k, "nome": v["nome"]} for k, v in clientes_conectados.items()]
                 conn.sendall((json.dumps({"tipo": "LISTA_CLIENTES", "clientes": lista}) + "\n").encode('utf-8'))
 
             elif tipo == "PAINEL_STREAM":
                 id_alvo = dados.get("id_alvo")
-                canal = dados.get("canal") # 'video' ou 'audio'
+                canal = dados.get("canal")
                 with lock:
                     cliente = clientes_conectados.get(id_alvo)
                 
@@ -108,6 +125,10 @@ def escutar_midia(porta, tipo_midia):
             pass
 
 if __name__ == "__main__":
+    # Inicia o servidor HTTP para o Render não dar erro
+    threading.Thread(target=iniciar_servidor_http, daemon=True).start()
+    
+    # Inicia as portas TCP do seu Relay
     threading.Thread(target=escutar_controle, daemon=True).start()
     threading.Thread(target=escutar_midia, args=(PORT_VIDEO, "video"), daemon=True).start()
     threading.Thread(target=escutar_midia, args=(PORT_AUDIO, "audio"), daemon=True).start()
